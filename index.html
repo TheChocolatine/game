@@ -1,172 +1,83 @@
 <!doctype html>
 <html lang="fr">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Mini Combat Multiplayer (stable 1v1)</title>
-  <style>
-    html,body{height:100%;margin:0;font-family:Inter,system-ui,Arial;background:#0b1020;color:#e6eef8}
-    .wrap{display:flex;gap:16px;padding:16px}
-    canvas{background:linear-gradient(#0f1724,#071026);border-radius:10px;box-shadow:0 8px 30px rgba(2,6,23,.7)}
-    .ui{width:360px}
-    button{display:block;margin:8px 0;padding:8px;border-radius:6px;border:none;background:#111827;color:#fff;font-weight:600}
-    textarea{width:100%;height:86px}
-    .row{display:flex;gap:8px}
-    .small{font-size:13px;color:#ccd6f6}
-    .status{padding:8px;background:#07102a;border-radius:8px}
-  </style>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Mini Combat Multi Joueurs</title>
+<style>
+html,body{margin:0;height:100%;background:#0b1020;color:#e6eef8;font-family:Arial}
+canvas{background:#071026;display:block;margin:0 auto;border-radius:8px}
+</style>
 </head>
 <body>
-  <div class="wrap">
-    <canvas id="game" width="900" height="600"></canvas>
-    <div class="ui">
-      <h2>Mini Combat P2P 1v1</h2>
-      <div class="status">
-        <div><strong>Statut:</strong> <span id="stat">idle</span></div>
-        <div><strong>Players:</strong> <span id="players">1</span></div>
-        <div><strong>Ping (approx):</strong> <span id="ping">—</span> ms</div>
-      </div>
-      <h3>Signaling (copy/paste)</h3>
-      <div class="row">
-        <button id="hostBtn">Je crée une partie (host)</button>
-        <button id="joinBtn">Je rejoins (answer)</button>
-      </div>
-      <label>Offer / Answer (base64)</label>
-      <textarea id="signal"></textarea>
-      <div class="row">
-        <button id="setSignal">Appliquer le texte</button>
-        <button id="copyLocal">Copier mon signal</button>
-      </div>
-      <h3>Contrôles</h3>
-      <p class="small">WASD — déplacer • Souris — viser • Clic gauche — attaquer</p>
-      <div style="margin-top:12px">
-        <button id="respawn">Se réinitialiser</button>
-      </div>
-    </div>
-  </div>
+<canvas id="game" width="900" height="600"></canvas>
 <script>
-const canvas = document.getElementById('game');
-const ctx = canvas.getContext('2d');
-const statEl = document.getElementById('stat');
-const playersEl = document.getElementById('players');
-const pingEl = document.getElementById('ping');
-const signalTA = document.getElementById('signal');
-const hostBtn = document.getElementById('hostBtn');
-const joinBtn = document.getElementById('joinBtn');
-const setSignal = document.getElementById('setSignal');
-const copyLocal = document.getElementById('copyLocal');
-const respawnBtn = document.getElementById('respawn');
+const canvas=document.getElementById('game');
+const ctx=canvas.getContext('2d');
 
-let pc = null;
-let dc = null;
-let isHost = false;
+let ws=null;
+let myId=null;
+const players={}; // key=id
 
-const local = { x:100, y:100, vx:0, vy:0, angle:0, hp:100, color:'#56CCF2', lastAttack:0 };
-const remote = { connected:false, hp:100, color:'#F79F79', x:500, y:300, angle:0 };
-const keys = {};
-let mouse = {x:0,y:0,down:false};
+const local={x:100,y:100,angle:0,hp:100,color:'#56CCF2',lastAttack:0};
+const keys={}; let mouse={x:0,y:0,down:false};
 
-function setStat(s){ statEl.textContent = s; }
-function updatePlayersCount(){ playersEl.textContent = remote.connected?2:1; }
+function connect(){
+  ws=new WebSocket('wss://TON_SERVEUR_WS'); // remplace par l'URL de ton serveur déployé
+  ws.onopen=()=>{ console.log('Connected'); }
+  ws.onmessage=e=>{
+    const msg=JSON.parse(e.data);
+    if(msg.t==='init'){ myId=msg.id; msg.players.forEach(p=>players[p.id]=p); }
+    else if(msg.t==='players'){ msg.players.forEach(p=>players[p.id]=p); }
+    else if(msg.t==='attack'){ handleAttack(msg); }
+  }
+}
+
+function handleAttack(msg){
+  if(msg.from===myId) return;
+  const p=players[msg.from];
+  if(!p) return;
+  const dx=local.x-msg.x, dy=local.y-msg.y;
+  if(Math.hypot(dx,dy)<36) local.hp=Math.max(0, local.hp-12);
+}
 
 function gameStep(dt){
-  const speed = 220;
-  let dx=0, dy=0;
+  const speed=220;
+  let dx=0,dy=0;
   if(keys['w']) dy-=1;
   if(keys['s']) dy+=1;
   if(keys['a']) dx-=1;
   if(keys['d']) dx+=1;
-  const len = Math.hypot(dx,dy);
+  const len=Math.hypot(dx,dy);
   if(len>0){ dx/=len; dy/=len; }
-  local.vx = dx*speed; local.vy = dy*speed;
-  local.x += local.vx*dt; local.y += local.vy*dt;
-  local.x = Math.max(16, Math.min(canvas.width-16, local.x));
-  local.y = Math.max(16, Math.min(canvas.height-16, local.y));
-  local.angle = Math.atan2(mouse.y - local.y, mouse.x - local.x);
+  local.x+=dx*speed*dt; local.y+=dy*speed*dt;
+  local.x=Math.max(16, Math.min(canvas.width-16, local.x));
+  local.y=Math.max(16, Math.min(canvas.height-16, local.y));
+  local.angle=Math.atan2(mouse.y-local.y, mouse.x-local.x);
 
-  if(mouse.down && Date.now() - local.lastAttack > 300){
-    local.lastAttack = Date.now();
-    tryLocalAttack(local.x, local.y, local.angle);
-    if(dc && dc.readyState==='open') dc.send(JSON.stringify({t:'attack', x:local.x, y:local.y, a:local.angle}));
+  if(mouse.down && Date.now()-local.lastAttack>300){
+    local.lastAttack=Date.now();
+    if(ws && ws.readyState===WebSocket.OPEN) ws.send(JSON.stringify({t:'attack', x:local.x, y:local.y, angle:local.angle}));
   }
 
-  if(dc && dc.readyState==='open'){
-    dc.send(JSON.stringify({t:'state', x:local.x, y:local.y, a:local.angle, hp:local.hp}));
+  if(ws && ws.readyState===WebSocket.OPEN){
+    ws.send(JSON.stringify({t:'update', x:local.x, y:local.y, angle:local.angle, hp:local.hp}));
   }
-}
-
-function tryLocalAttack(x,y,angle){
-  const reach=36;
-  const dx = remote.x - x, dy = remote.y - y;
-  if(Math.hypot(dx,dy)<reach){ remote.hp=Math.max(0, remote.hp-12); }
 }
 
 function render(){
   ctx.clearRect(0,0,canvas.width,canvas.height);
   ctx.fillStyle='#071026'; ctx.fillRect(0,0,canvas.width,canvas.height);
 
-  if(remote.connected){
-    ctx.save(); ctx.translate(remote.x,remote.y); ctx.rotate(remote.angle);
-    ctx.fillStyle=remote.color; ctx.beginPath(); ctx.arc(0,0,14,0,Math.PI*2); ctx.fill();
-    ctx.fillRect(14,-4,18,8);
-    ctx.restore();
-    ctx.fillStyle='#222'; ctx.fillRect(remote.x-22, remote.y-30,44,6);
-    ctx.fillStyle='#e74c3c'; ctx.fillRect(remote.x-22, remote.y-30,44*(remote.hp/100),6);
+  for(const id in players){
+    const p=players[id];
+    ctx.save(); ctx.translate(p.x,p.y); ctx.rotate(p.angle);
+    ctx.fillStyle=p.color; ctx.beginPath(); ctx.arc(0,0,14,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle='#111'; ctx.fillRect(14,-4,18,8); ctx.restore();
+    ctx.fillStyle='#222'; ctx.fillRect(p.x-22,p.y-30,44,6);
+    ctx.fillStyle=id===myId?'#2ecc71':''#e74c3c''; ctx.fillRect(p.x-22,p.y-30,44*(p.hp/100),6);
   }
-
-  ctx.save(); ctx.translate(local.x,local.y); ctx.rotate(local.angle);
-  ctx.fillStyle=local.color; ctx.beginPath(); ctx.arc(0,0,14,0,Math.PI*2); ctx.fill();
-  ctx.fillStyle='#111'; ctx.fillRect(14,-4,18,8);
-  ctx.restore();
-  ctx.fillStyle='#222'; ctx.fillRect(local.x-22, local.y-30,44,6);
-  ctx.fillStyle='#2ecc71'; ctx.fillRect(local.x-22, local.y-30,44*(local.hp/100),6);
 }
-
-async function makePC(){
-  pc=new RTCPeerConnection({iceServers:[{urls:['stun:stun.l.google.com:19302']}]});
-  pc.onicecandidate=e=>{};
-  pc.onconnectionstatechange=()=>{ setStat(pc.connectionState); };
-  pc.ondatachannel=e=>{ dc=e.channel; setupDC(); };
-}
-
-function setupDC(){
-  if(!dc) return;
-  dc.onopen=()=>{ remote.connected=true; updatePlayersCount(); setStat('connected'); dc.send(JSON.stringify({t:'init', x:local.x, y:local.y, hp:local.hp, color:local.color})); };
-  dc.onmessage=e=>{ try{ const msg=JSON.parse(e.data); handleMsg(msg); }catch{} };
-  dc.onclose=()=>{ remote.connected=false; updatePlayersCount(); setStat('disconnected'); };
-}
-
-function handleMsg(msg){
-  if(msg.t==='init'){ remote.x=msg.x; remote.y=msg.y; remote.hp=msg.hp; remote.color=msg.color; }
-  else if(msg.t==='state'){ remote.x=msg.x; remote.y=msg.y; remote.a=msg.a; remote.hp=msg.hp; }
-  else if(msg.t==='attack'){ const dx=local.x-msg.x,dy=local.y-msg.y;if(Math.hypot(dx,dy)<36) local.hp=Math.max(0, local.hp-12); }
-}
-
-hostBtn.onclick=async()=>{
-  isHost=true;
-  await makePC();
-  dc=pc.createDataChannel('game');
-  setupDC();
-  const offer=await pc.createOffer(); await pc.setLocalDescription(offer);
-  setTimeout(()=>{ signalTA.value=btoa(JSON.stringify(pc.localDescription)); setStat('offer-ready'); },800);
-};
-
-joinBtn.onclick=async()=>{
-  isHost=false;
-  const s=signalTA.value.trim(); if(!s) return alert('Collez l\'offer');
-  await makePC();
-  const offer=JSON.parse(atob(s)); await pc.setRemoteDescription(offer);
-  const answer=await pc.createAnswer(); await pc.setLocalDescription(answer);
-  setTimeout(()=>{ signalTA.value=btoa(JSON.stringify(pc.localDescription)); setStat('answer-ready'); },800);
-};
-
-setSignal.onclick=async()=>{
-  const s=signalTA.value.trim(); if(!s) return;
-  try{ const desc=JSON.parse(atob(s)); await pc.setRemoteDescription(desc); }catch(e){ alert('Erreur signal: '+e.message); }
-};
-
-copyLocal.onclick=()=>{ signalTA.select(); document.execCommand('copy'); };
-respawnBtn.onclick=()=>{ local.hp=100; local.x=100+Math.random()*700; local.y=100+Math.random()*400; };
 
 window.addEventListener('keydown',e=>{ keys[e.key.toLowerCase()]=true; });
 window.addEventListener('keyup',e=>{ keys[e.key.toLowerCase()]=false; });
@@ -175,9 +86,9 @@ canvas.addEventListener('mousedown',()=>{ mouse.down=true; });
 window.addEventListener('mouseup',()=>{ mouse.down=false; });
 
 let last=performance.now();
-function loop(now){ const dt=(now-last)/1000; last=now; gameStep(dt); render(); requestAnimationFrame(loop); }
+function loop(now){ const dt=(now-last)/1000; last=now; gameStep(dt); render(); requestAnimationFrame(loop);}
 requestAnimationFrame(loop);
-updatePlayersCount(); setStat('idle');
+connect();
 </script>
 </body>
 </html>
