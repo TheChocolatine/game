@@ -1,0 +1,30 @@
+const WebSocket = require('ws');
+const PORT = process.env.PORT || 8080;
+const wss = new WebSocket.Server({ port: PORT });
+const players = new Map();
+
+wss.on('connection', ws => {
+  const id = Math.random().toString(36).substr(2,9);
+  players.set(id, {id, x:Math.random()*800+50, y:Math.random()*500+50, angle:0, hp:100, color:'#'+Math.floor(Math.random()*16777215).toString(16)});
+  
+  ws.send(JSON.stringify({t:'init', id, players:Array.from(players.values())}));
+
+  ws.on('message', msg => {
+    let data;
+    try { data = JSON.parse(msg); } catch(e){ return; }
+
+    if(data.t==='update'){
+      const p = players.get(id);
+      if(p){ p.x=data.x; p.y=data.y; p.angle=data.angle; p.hp=data.hp; }
+      const payload = JSON.stringify({t:'players', players:Array.from(players.values())});
+      wss.clients.forEach(c=>{ if(c.readyState===WebSocket.OPEN) c.send(payload); });
+    } else if(data.t==='attack'){
+      const payload = JSON.stringify({t:'attack', from:id, x:data.x, y:data.y, angle:data.angle});
+      wss.clients.forEach(c=>{ if(c.readyState===WebSocket.OPEN) c.send(payload); });
+    }
+  });
+
+  ws.on('close', () => { players.delete(id); });
+});
+
+console.log('WebSocket server running on port', PORT);
