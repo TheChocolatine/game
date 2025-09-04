@@ -8,7 +8,7 @@ function randomColor(){ return '#'+Math.floor(Math.random()*16777215).toString(1
 
 wss.on('connection', ws => {
   const id = Math.random().toString(36).substr(2,9);
-  players.set(id, {id, x:Math.random()*10-5, y:0, z:Math.random()*10-5, angle:0, hp:100, color:randomColor(), score:0});
+  players.set(id, {id, x:Math.random()*10-5, y:0, z:Math.random()*10-5, rotY:0, hp:100, color:randomColor(), score:0});
 
   ws.send(JSON.stringify({t:'init', id, players:Array.from(players.values()), projectiles}));
 
@@ -18,9 +18,9 @@ wss.on('connection', ws => {
 
     if(data.t==='update'){
       const p = players.get(id);
-      if(p){ p.x=data.x; p.y=data.y; p.z=data.z; p.angle=data.angle; p.hp=data.hp; }
+      if(p){ p.x=data.x; p.y=data.y; p.z=data.z; p.rotY=data.rotY; p.hp=data.hp; }
     } else if(data.t==='shoot'){
-      projectiles.push({id, x:data.x, y:data.y, z:data.z, angle:data.angle, speed:10, color:data.color});
+      projectiles.push({id, x:data.x, y:data.y+1.5, z:data.z, rotY:data.rotY, speed:10, color:data.color});
     }
   });
 
@@ -31,14 +31,14 @@ wss.on('connection', ws => {
 setInterval(()=>{
   for(let i=projectiles.length-1;i>=0;i--){
     const proj = projectiles[i];
-    proj.x += Math.cos(proj.angle)*proj.speed*0.016;
-    proj.z += Math.sin(proj.angle)*proj.speed*0.016;
+    proj.x += Math.sin(proj.rotY)*proj.speed*0.016;
+    proj.z += Math.cos(proj.rotY)*proj.speed*0.016;
 
     for(const [pid,p] of players){
       if(pid===proj.id) continue;
       const dx = p.x - proj.x, dz = p.z - proj.z;
       if(Math.hypot(dx,dz)<0.5){
-        p.hp -= 10;
+        p.hp -= 20;
         if(p.hp<=0){ p.hp=100; p.x=Math.random()*10-5; p.z=Math.random()*10-5; players.get(proj.id).score+=1; }
         projectiles.splice(i,1); break;
       }
@@ -50,4 +50,4 @@ setInterval(()=>{
   wss.clients.forEach(c=>{ if(c.readyState===WebSocket.OPEN) c.send(payload); });
 },16);
 
-console.log('3D INSANE WebSocket server running on port', PORT);
+console.log('FPS WebSocket server running on port', PORT);
