@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Mini Combat Multiplayer (déployable sur Vercel)</title>
+  <title>Mini Combat Multiplayer (stable 1v1)</title>
   <style>
     html,body{height:100%;margin:0;font-family:Inter,system-ui,Arial;background:#0b1020;color:#e6eef8}
     .wrap{display:flex;gap:16px;padding:16px}
@@ -20,44 +20,31 @@
   <div class="wrap">
     <canvas id="game" width="900" height="600"></canvas>
     <div class="ui">
-      <h2>Mini Combat P2P</h2>
-      <p class="small">Connexion peer-to-peer via WebRTC (copy/paste signaling — pas de serveur). Déployable tel quel sur Vercel : placez ce fichier dans un repo et publiez.</p>
-
+      <h2>Mini Combat P2P 1v1</h2>
       <div class="status">
         <div><strong>Statut:</strong> <span id="stat">idle</span></div>
         <div><strong>Players:</strong> <span id="players">1</span></div>
         <div><strong>Ping (approx):</strong> <span id="ping">—</span> ms</div>
       </div>
-
       <h3>Signaling (copy/paste)</h3>
       <div class="row">
         <button id="hostBtn">Je crée une partie (host)</button>
         <button id="joinBtn">Je rejoins (answer)</button>
       </div>
-
       <label>Offer / Answer (base64)</label>
       <textarea id="signal"></textarea>
       <div class="row">
-        <button id="setSignal">Appliquer le texte (coller ici)</button>
+        <button id="setSignal">Appliquer le texte</button>
         <button id="copyLocal">Copier mon signal</button>
       </div>
-
       <h3>Contrôles</h3>
       <p class="small">WASD — déplacer • Souris — viser • Clic gauche — attaquer</p>
-
-      <h3>Infos</h3>
-      <p class="small">Pas de compte, pas de serveur. Si vous voulez matchmaking automatique il faudra un petit serveur de signalisation (je peux vous fournir le code)</p>
-
       <div style="margin-top:12px">
         <button id="respawn">Se réinitialiser</button>
       </div>
     </div>
   </div>
-
 <script>
-// --- Simple top-down multiplayer using WebRTC datachannel + copy/paste signaling
-// Works peer-to-peer between two browsers. Save as index.html and déployez sur Vercel (static).
-
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
 const statEl = document.getElementById('stat');
@@ -72,251 +59,125 @@ const respawnBtn = document.getElementById('respawn');
 
 let pc = null;
 let dc = null;
-let localId = Math.floor(Math.random()*99999).toString(36);
 let isHost = false;
-let lastPingAt = 0;
 
-const local = {
-  id: localId,
-  x: 100 + Math.random()*600,
-  y: 100 + Math.random()*400,
-  vx:0, vy:0,
-  angle:0,
-  hp:100,
-  color:'#56CCF2',
-  lastAttack:0
-};
-const remote = { connected:false };
-
-// Input
+const local = { x:100, y:100, vx:0, vy:0, angle:0, hp:100, color:'#56CCF2', lastAttack:0 };
+const remote = { connected:false, hp:100, color:'#F79F79', x:500, y:300, angle:0 };
 const keys = {};
 let mouse = {x:0,y:0,down:false};
 
-// Utilities
-function setStat(s){ statEl.textContent = s }
-function updatePlayersCount(){ playersEl.textContent = (remote.connected?2:1) }
+function setStat(s){ statEl.textContent = s; }
+function updatePlayersCount(){ playersEl.textContent = remote.connected?2:1; }
 
-// Physics & gameplay
 function gameStep(dt){
-  // movement
   const speed = 220;
   let dx=0, dy=0;
-  if(keys['w']) dy -= 1;
-  if(keys['s']) dy += 1;
-  if(keys['a']) dx -= 1;
-  if(keys['d']) dx += 1;
+  if(keys['w']) dy-=1;
+  if(keys['s']) dy+=1;
+  if(keys['a']) dx-=1;
+  if(keys['d']) dx+=1;
   const len = Math.hypot(dx,dy);
-  if(len>0){ dx = dx/len; dy = dy/len; }
-  local.vx = dx*speed;
-  local.vy = dy*speed;
-  local.x += local.vx*dt;
-  local.y += local.vy*dt;
-
-  // clamp to canvas
+  if(len>0){ dx/=len; dy/=len; }
+  local.vx = dx*speed; local.vy = dy*speed;
+  local.x += local.vx*dt; local.y += local.vy*dt;
   local.x = Math.max(16, Math.min(canvas.width-16, local.x));
   local.y = Math.max(16, Math.min(canvas.height-16, local.y));
-
-  // angle toward mouse
   local.angle = Math.atan2(mouse.y - local.y, mouse.x - local.x);
 
-  // attack
   if(mouse.down && Date.now() - local.lastAttack > 300){
     local.lastAttack = Date.now();
-    // send attack event
-    send({t:'attack', x:local.x, y:local.y, a:local.angle});
-    // apply local hit detection (optimistic)
     tryLocalAttack(local.x, local.y, local.angle);
+    if(dc && dc.readyState==='open') dc.send(JSON.stringify({t:'attack', x:local.x, y:local.y, a:local.angle}));
   }
 
-  // send state regularly
-  if(dc && dc.readyState === 'open'){
-    const payload = JSON.stringify({t:'state', x:local.x, y:local.y, a:local.angle, hp:local.hp, ts:Date.now()});
-    dc.send(payload);
+  if(dc && dc.readyState==='open'){
+    dc.send(JSON.stringify({t:'state', x:local.x, y:local.y, a:local.angle, hp:local.hp}));
   }
 }
 
 function tryLocalAttack(x,y,angle){
-  if(!remote.connected) return;
-  const reach = 36;
-  // simple point-hit: if remote within reach in front arc
-  const rx = remote.x || 0;
-  const ry = remote.y || 0;
-  const dx = rx - x, dy = ry - y;
-  const dist = Math.hypot(dx,dy);
-  if(dist <= reach){
-    // simple damage
-    remote.hp = (remote.hp||100) - 12;
-  }
+  const reach=36;
+  const dx = remote.x - x, dy = remote.y - y;
+  if(Math.hypot(dx,dy)<reach){ remote.hp=Math.max(0, remote.hp-12); }
 }
 
-// Rendering
-function renderInterpolation(){
+function render(){
   ctx.clearRect(0,0,canvas.width,canvas.height);
-  // arena
-  ctx.fillStyle = '#071026';
-  ctx.fillRect(0,0,canvas.width,canvas.height);
+  ctx.fillStyle='#071026'; ctx.fillRect(0,0,canvas.width,canvas.height);
 
-  // draw remote
   if(remote.connected){
-    const rx = remote.x || 200, ry = remote.y || 200;
-    ctx.save();
-    ctx.translate(rx,ry);
-    ctx.rotate(remote.a || 0);
-    ctx.fillStyle = remote.color || '#F79F79';
-    ctx.beginPath(); ctx.arc(0,0,14,0,Math.PI*2); ctx.fill();
-    // weapon
-    ctx.fillRect(14, -4, 18, 8);
+    ctx.save(); ctx.translate(remote.x,remote.y); ctx.rotate(remote.angle);
+    ctx.fillStyle=remote.color; ctx.beginPath(); ctx.arc(0,0,14,0,Math.PI*2); ctx.fill();
+    ctx.fillRect(14,-4,18,8);
     ctx.restore();
-    // health bar
-    ctx.fillStyle = '#222'; ctx.fillRect(rx-22, ry-30, 44,6);
-    ctx.fillStyle = '#e74c3c'; ctx.fillRect(rx-22, ry-30, 44 * Math.max(0,(remote.hp||100)/100), 6);
+    ctx.fillStyle='#222'; ctx.fillRect(remote.x-22, remote.y-30,44,6);
+    ctx.fillStyle='#e74c3c'; ctx.fillRect(remote.x-22, remote.y-30,44*(remote.hp/100),6);
   }
 
-  // draw local
-  ctx.save();
-  ctx.translate(local.x, local.y);
-  ctx.rotate(local.angle);
-  ctx.fillStyle = local.color;
-  ctx.beginPath(); ctx.arc(0,0,14,0,Math.PI*2); ctx.fill();
-  ctx.fillStyle = '#111'; ctx.fillRect(14, -4, 18, 8);
+  ctx.save(); ctx.translate(local.x,local.y); ctx.rotate(local.angle);
+  ctx.fillStyle=local.color; ctx.beginPath(); ctx.arc(0,0,14,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#111'; ctx.fillRect(14,-4,18,8);
   ctx.restore();
-  // health
-  ctx.fillStyle = '#222'; ctx.fillRect(local.x-22, local.y-30, 44,6);
-  ctx.fillStyle = '#2ecc71'; ctx.fillRect(local.x-22, local.y-30, 44 * (local.hp/100), 6);
-
-  // HUD
-  ctx.fillStyle = '#cbd5e1'; ctx.font = '14px Arial';
-  ctx.fillText('HP: '+Math.max(0,Math.round(local.hp)), 12, 18);
-  if(remote.connected) ctx.fillText('Enemy HP: '+Math.max(0,Math.round(remote.hp||0)), 12, 36);
+  ctx.fillStyle='#222'; ctx.fillRect(local.x-22, local.y-30,44,6);
+  ctx.fillStyle='#2ecc71'; ctx.fillRect(local.x-22, local.y-30,44*(local.hp/100),6);
 }
 
-// Networking: WebRTC with datachannel. Signaling via copy/paste
-async function makePeerConnection(){
-  pc = new RTCPeerConnection({iceServers:[{urls:['stun:stun.l.google.com:19302']} ]});
-  pc.onicecandidate = e => {
-    // whenever ICE candidate appears, we'll include it in the exported signal by setting local description again
-    // (user will copy the full SDP including ICE candidates)
-    // No immediate action here — rely on full SDP export
-    // update status
-    setStat('gathering-ice');
-  };
-  pc.onconnectionstatechange = () => {
-    setStat(pc.connectionState);
-  };
-  pc.ondatachannel = ev => {
-    dc = ev.channel;
-    setupDataChannel();
-  };
+async function makePC(){
+  pc=new RTCPeerConnection({iceServers:[{urls:['stun:stun.l.google.com:19302']}]});
+  pc.onicecandidate=e=>{};
+  pc.onconnectionstatechange=()=>{ setStat(pc.connectionState); };
+  pc.ondatachannel=e=>{ dc=e.channel; setupDC(); };
 }
 
-function setupDataChannel(){
+function setupDC(){
   if(!dc) return;
-  dc.onopen = () => {
-    remote.connected = true;
-    updatePlayersCount();
-    setStat('connected');
-    // send initial info
-    dc.send(JSON.stringify({t:'init', id:local.id, x:local.x, y:local.y, color:local.color, hp:local.hp}));
-    // start ping checks
-    setInterval(()=>{ if(dc && dc.readyState==='open'){ const now=Date.now(); dc.send(JSON.stringify({t:'ping', ts:now})); lastPingAt=now;} }, 2000);
-  };
-  dc.onmessage = ev => {
-    try{
-      const msg = JSON.parse(ev.data);
-      handleMessage(msg);
-    }catch(e){ console.log('recv raw', ev.data); }
-  };
-  dc.onclose = ()=>{ remote.connected=false; updatePlayersCount(); setStat('disconnected'); };
+  dc.onopen=()=>{ remote.connected=true; updatePlayersCount(); setStat('connected'); dc.send(JSON.stringify({t:'init', x:local.x, y:local.y, hp:local.hp, color:local.color})); };
+  dc.onmessage=e=>{ try{ const msg=JSON.parse(e.data); handleMsg(msg); }catch{} };
+  dc.onclose=()=>{ remote.connected=false; updatePlayersCount(); setStat('disconnected'); };
 }
 
-function handleMessage(msg){
-  if(msg.t==='init'){
-    remote.id = msg.id; remote.x=msg.x; remote.y=msg.y; remote.color=msg.color; remote.hp=msg.hp;
-  }else if(msg.t==='state'){
-    remote.x = msg.x; remote.y = msg.y; remote.a = msg.a; remote.hp = msg.hp;
-  }else if(msg.t==='attack'){
-    // remote attacked — check if hit local
-    const dx = local.x - msg.x, dy = local.y - msg.y; if(Math.hypot(dx,dy) < 36){ local.hp -= 12; }
-  }else if(msg.t==='ping'){ const pong = {t:'pong', ts:msg.ts, now:Date.now()}; dc.send(JSON.stringify(pong)); }
-  else if(msg.t==='pong'){ const rtt = Date.now() - msg.ts; pingEl.textContent = String(rtt); }
+function handleMsg(msg){
+  if(msg.t==='init'){ remote.x=msg.x; remote.y=msg.y; remote.hp=msg.hp; remote.color=msg.color; }
+  else if(msg.t==='state'){ remote.x=msg.x; remote.y=msg.y; remote.a=msg.a; remote.hp=msg.hp; }
+  else if(msg.t==='attack'){ const dx=local.x-msg.x,dy=local.y-msg.y;if(Math.hypot(dx,dy)<36) local.hp=Math.max(0, local.hp-12); }
 }
 
-// UI handlers for signaling
-hostBtn.addEventListener('click', async ()=>{
-  isHost = true;
-  await makePeerConnection();
-  dc = pc.createDataChannel('game');
-  setupDataChannel();
-  const offer = await pc.createOffer();
-  await pc.setLocalDescription(offer);
-  // wait briefly for ICE
-  setTimeout(()=>{
-    // export full SDP as base64
-    const s = btoa(JSON.stringify(pc.localDescription));
-    signalTA.value = s;
-    setStat('offer-ready');
-  }, 800);
-});
+hostBtn.onclick=async()=>{
+  isHost=true;
+  await makePC();
+  dc=pc.createDataChannel('game');
+  setupDC();
+  const offer=await pc.createOffer(); await pc.setLocalDescription(offer);
+  setTimeout(()=>{ signalTA.value=btoa(JSON.stringify(pc.localDescription)); setStat('offer-ready'); },800);
+};
 
-joinBtn.addEventListener('click', async ()=>{
-  isHost = false;
-  const pasted = signalTA.value.trim();
-  if(!pasted){ alert('Collez d\'abord l\'offer dans la zone'); return; }
-  await makePeerConnection();
-  // decode offer
-  const offer = JSON.parse(atob(pasted));
-  await pc.setRemoteDescription(offer);
-  const answer = await pc.createAnswer();
-  await pc.setLocalDescription(answer);
-  // give time for ICE
-  setTimeout(()=>{
-    signalTA.value = btoa(JSON.stringify(pc.localDescription));
-    setStat('answer-ready');
-  }, 800);
-});
+joinBtn.onclick=async()=>{
+  isHost=false;
+  const s=signalTA.value.trim(); if(!s) return alert('Collez l\'offer');
+  await makePC();
+  const offer=JSON.parse(atob(s)); await pc.setRemoteDescription(offer);
+  const answer=await pc.createAnswer(); await pc.setLocalDescription(answer);
+  setTimeout(()=>{ signalTA.value=btoa(JSON.stringify(pc.localDescription)); setStat('answer-ready'); },800);
+};
 
-setSignal.addEventListener('click', async ()=>{
-  const txt = signalTA.value.trim();
-  if(!txt) return;
-  try{
-    const desc = JSON.parse(atob(txt));
-    if(desc.type === 'answer' && isHost){
-      await pc.setRemoteDescription(desc);
-      setStat('connected? waiting');
-    }else if(desc.type === 'offer' && !isHost){
-      // handled during join flow normally
-      await pc.setRemoteDescription(desc);
-    }else{
-      // could be ICE-only update: setRemoteDescription works if it's an SDP
-      await pc.setRemoteDescription(desc);
-    }
-  }catch(e){ console.error(e); alert('Impossible d\'appliquer le signal: '+e.message); }
-});
+setSignal.onclick=async()=>{
+  const s=signalTA.value.trim(); if(!s) return;
+  try{ const desc=JSON.parse(atob(s)); await pc.setRemoteDescription(desc); }catch(e){ alert('Erreur signal: '+e.message); }
+};
 
-copyLocal.addEventListener('click', ()=>{ signalTA.select(); document.execCommand('copy'); });
-respawnBtn.addEventListener('click', ()=>{ local.hp=100; local.x = 100+Math.random()*700; local.y=100+Math.random()*400; });
+copyLocal.onclick=()=>{ signalTA.select(); document.execCommand('copy'); };
+respawnBtn.onclick=()=>{ local.hp=100; local.x=100+Math.random()*700; local.y=100+Math.random()*400; };
 
-// inputs
-window.addEventListener('keydown', e=>{ keys[e.key.toLowerCase()] = true; });
-window.addEventListener('keyup', e=>{ keys[e.key.toLowerCase()] = false; });
-canvas.addEventListener('mousemove', e=>{
-  const r = canvas.getBoundingClientRect(); mouse.x = e.clientX - r.left; mouse.y = e.clientY - r.top; });
-canvas.addEventListener('mousedown', e=>{ mouse.down=true });
-window.addEventListener('mouseup', e=>{ mouse.down=false });
+window.addEventListener('keydown',e=>{ keys[e.key.toLowerCase()]=true; });
+window.addEventListener('keyup',e=>{ keys[e.key.toLowerCase()]=false; });
+canvas.addEventListener('mousemove',e=>{ const r=canvas.getBoundingClientRect(); mouse.x=e.clientX-r.left; mouse.y=e.clientY-r.top; });
+canvas.addEventListener('mousedown',()=>{ mouse.down=true; });
+window.addEventListener('mouseup',()=>{ mouse.down=false; });
 
-// main loop
-let last = performance.now();
-function loop(now){
-  const dt = (now - last)/1000; last = now;
-  gameStep(dt);
-  renderInterpolation();
-  requestAnimationFrame(loop);
-}
+let last=performance.now();
+function loop(now){ const dt=(now-last)/1000; last=now; gameStep(dt); render(); requestAnimationFrame(loop); }
 requestAnimationFrame(loop);
-
-// expose some helpers for debugging
-window._GAME = {local, remote, pc};
-setStat('idle'); updatePlayersCount();
+updatePlayersCount(); setStat('idle');
 </script>
 </body>
 </html>
