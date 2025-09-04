@@ -39,8 +39,14 @@ setInterval(()=>{
       const dx = p.x - proj.x, dz = p.z - proj.z;
       if(Math.hypot(dx,dz)<0.5){
         p.hp -= 20;
-        if(p.hp<=0){ p.hp=100; p.x=Math.random()*10-5; p.z=Math.random()*10-5; players.get(proj.id).score+=1; }
-        projectiles.splice(i,1); break;
+        if(p.hp<=0){ 
+          p.hp=100; 
+          p.x=Math.random()*10-5; 
+          p.z=Math.random()*10-5; 
+          players.get(proj.id).score+=1; 
+        }
+        projectiles.splice(i,1); 
+        break;
       }
     }
     if(Math.abs(proj.x)>20||Math.abs(proj.z)>20) projectiles.splice(i,1);
